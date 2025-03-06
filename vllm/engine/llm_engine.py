@@ -972,7 +972,19 @@ class LLMEngine:
         if do_update:
             seq_group.update_num_computed_tokens(
                 seq_group_meta.token_chunk_size)
-
+    
+    def clear_all_requests(self) -> None:
+        """Aborts (clears) all unfinished requests managed by this engine."""
+        # Собираем все request_id из всех шедулеров (running, waiting, swapped)
+        all_request_ids = set()
+        for scheduler in self.scheduler:
+            for seq_group in list(scheduler.running) + list(scheduler.waiting) + list(scheduler.swapped):
+                all_request_ids.add(seq_group.request_id)
+    
+        # Прерываем все найденные запросы
+        if all_request_ids:
+            self.abort_request(all_request_ids)
+    
     def _process_model_outputs(self,
                                ctx: SchedulerContext,
                                request_id: Optional[str] = None) -> None:

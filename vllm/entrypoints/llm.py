@@ -41,11 +41,21 @@ from vllm.transformers_utils.tokenizer import (AnyTokenizer, MistralTokenizer,
 from vllm.transformers_utils.tokenizer_group import TokenizerGroup
 from vllm.usage.usage_lib import UsageContext
 from vllm.utils import Counter, deprecate_args, deprecate_kwargs, is_list_of
+import re
 
 logger = init_logger(__name__)
 
 _R = TypeVar("_R", default=Any)
 
+def extract_boxed_text(text):
+    pattern = r'oxed{(.*?)}'
+    matches = re.findall(pattern, text)
+    if not matches:
+        return ""
+    for match in matches[::-1]:
+        if match != "":
+            return match
+    return ""
 
 class LLM:
     """An LLM for generating texts from given prompts and sampling parameters.
@@ -1384,11 +1394,34 @@ class LLM:
         outputs: List[Union[RequestOutput, PoolingRequestOutput]] = []
         total_in_toks = 0
         total_out_toks = 0
+        anses = []
+        counts = {}
+        cnt = 0
         while self.llm_engine.has_unfinished_requests():
             step_outputs = self.llm_engine.step()
+            cnt += 1
+            
             for output in step_outputs:
                 if output.finished:
+                    ans = extract_boxed_text(output.outputs[0].text)
+                    # print(output)
+                    
+                    anses.append(ans)
                     outputs.append(output)
+    
+                    # Обновляем счётчик для данного ответа
+                    counts[ans] = counts.get(ans, 0) + 1
+        
+                    # Проверяем, нужно ли оценивать распределение (например, от половины уже собранных ответов)
+                    if (len(anses) >  num_requests / 2 and (max(counts.values()) / len(anses) > 0.7)) or (len(anses) > 2 * num_requests / 3 and (max(counts.values()) / len(anses) > 0.65)) or ((len(anses) >= num_requests // 4) and cnt > 4096 * 3):  # <-- # YOUR CODE
+                        self.llm_engine.clear_all_requests()
+                        # Если есть элемент, который занимает более 70% ответов, делаем то, что нужно:
+                        # например, прерываем дальнейшую обработку и возвращаем уже полученные результаты.
+                        pbar.update(1)
+                        if use_tqdm:
+                            pbar.close()
+                        return sorted(outputs, key=lambda x: int(x.request_id))
+
                     if use_tqdm:
                         if isinstance(output, RequestOutput):
                             # Calculate tokens only for RequestOutput
